@@ -267,6 +267,26 @@ func (s *freebsdSystem) WriteFile(path, content, mode, owner, group string) erro
 	return nil
 }
 
+// PackageInstall calls `pkg install -y` (auto-yes). pkg(8) bootstraps
+// itself on first invocation (downloads /usr/local/sbin/pkg-static)
+// when only the stub is present ; -y also accepts that prompt.
+// Already-installed packages are skipped silently by pkg.
+func (s *freebsdSystem) PackageInstall(pkgs []string) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	s.log.Info("package install", "pkgs", pkgs)
+	argv := append([]string{"install", "-y"}, pkgs...)
+	c := exec.Command("/usr/sbin/pkg", argv...)
+	// ASSUME_ALWAYS_YES covers the pkg-bootstrap prompt the first time.
+	c.Env = append(os.Environ(), "ASSUME_ALWAYS_YES=YES")
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pkg install %v: %w: %s", pkgs, err, bytes.TrimSpace(out))
+	}
+	return nil
+}
+
 // RunShell runs through /bin/sh -c so users can pipe / && / redirect as
 // in their cloud-init manifest.
 func (s *freebsdSystem) RunShell(cmd string) error {

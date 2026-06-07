@@ -331,6 +331,27 @@ func lookupOwner(owner, group string) (int, int, error) {
 	return uid, gid, nil
 }
 
+// PackageInstall calls pkg_add(1) with -I (non-interactive : reject any
+// prompt instead of hanging at the install). pkg_add resolves package
+// specs against the PKG_PATH set in the environment (defaulting to the
+// installurl on /etc/installurl). pkg_add is idempotent : already-
+// installed packages are reported and skipped.
+func (s *openbsdSystem) PackageInstall(pkgs []string) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	s.log.Info("package install", "pkgs", pkgs)
+	argv := append([]string{"-I"}, pkgs...)
+	c := exec.Command("/usr/sbin/pkg_add", argv...)
+	var out bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = &out
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("pkg_add %v: %w (output: %s)", pkgs, err, strings.TrimSpace(out.String()))
+	}
+	return nil
+}
+
 // RunShell hands cmd to /bin/sh -c. stdout+stderr are blended into the
 // error on non-zero exit so the operator sees what the script printed.
 func (s *openbsdSystem) RunShell(cmd string) error {

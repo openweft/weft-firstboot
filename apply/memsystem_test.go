@@ -23,6 +23,7 @@ type memSystem struct {
 	runShellCmds    []string
 	addedAuthorized map[string][]string // user → keys (dedup-aware)
 	addedToGroups   map[string][]string // user → group set
+	installedPkgs   [][]string          // each PackageInstall call captured
 	// Error injection -- nil means succeed.
 	runShellErr error
 }
@@ -93,6 +94,10 @@ func (m *memSystem) AddAuthorizedKey(user, key string) error {
 }
 func (m *memSystem) WriteFile(path, content, mode, owner, group string) error {
 	m.files[path] = memFile{content, mode, owner, group}
+	return nil
+}
+func (m *memSystem) PackageInstall(pkgs []string) error {
+	m.installedPkgs = append(m.installedPkgs, append([]string(nil), pkgs...))
 	return nil
 }
 func (m *memSystem) RunShell(cmd string) error {
@@ -210,6 +215,34 @@ func TestApply_ExistingUserGroupReconcile(t *testing.T) {
 		if !contains(added, g) {
 			t.Errorf("expected %s in addedToGroups ; got %v", g, added)
 		}
+	}
+}
+
+func TestApply_PackagesCalledOnceWithFullList(t *testing.T) {
+	cfg := config.Config{
+		Packages: []string{"nginx", "vim", "tmux"},
+	}
+	sys := newMemSystem()
+	if err := Apply(cfg, sys, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sys.installedPkgs) != 1 {
+		t.Fatalf("PackageInstall called %d times ; want 1 (batched)", len(sys.installedPkgs))
+	}
+	want := []string{"nginx", "vim", "tmux"}
+	if !reflect.DeepEqual(sys.installedPkgs[0], want) {
+		t.Errorf("installedPkgs[0] = %v ; want %v", sys.installedPkgs[0], want)
+	}
+}
+
+func TestApply_EmptyPackagesIsNoOp(t *testing.T) {
+	cfg := config.Config{Packages: nil}
+	sys := newMemSystem()
+	if err := Apply(cfg, sys, quietLog()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sys.installedPkgs) != 0 {
+		t.Errorf("PackageInstall called %d times for empty pkgs ; want 0", len(sys.installedPkgs))
 	}
 }
 

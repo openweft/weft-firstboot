@@ -16,7 +16,15 @@ package config
 //   2. WriteFiles  (in declaration order)
 //   3. CreateUsers (in declaration order ; each user's authorized_keys
 //      land after the user's home is created)
-//   4. RunCmds     (in declaration order, fail-fast on non-zero exit)
+//   4. Packages    (one PackageInstall call with the whole list ; the
+//      per-OS pkg manager handles batching itself for efficiency)
+//   5. RunCmds     (in declaration order, fail-fast on non-zero exit)
+//
+// Packages-before-RunCmds is intentional : a typical config installs
+// nginx then runs `systemctl enable nginx` ; the runcmd needs the
+// binary on disk first. WriteFiles-before-Packages keeps any required
+// pkg manager config (e.g. /etc/apt/sources.list.d/foo.list) in place
+// before the install fires.
 //
 // Idempotence is required at the System layer : re-running a Config
 // against an already-provisioned host should be a no-op, not an error.
@@ -38,6 +46,15 @@ type Config struct {
 	// WriteFiles are landed before users are created so e.g. /etc/doas.conf
 	// can be in place before the wheel user is added.
 	WriteFiles []File
+
+	// Packages are installed via the OS-native package manager :
+	// apt-get / dnf on Linux (autodetected), pkg_add on OpenBSD,
+	// pkg install on FreeBSD, pkgin install on NetBSD. The names
+	// are passed through verbatim ; cross-OS package naming
+	// portability is the caller's responsibility (e.g. "nginx"
+	// works on apt/dnf/pkg/pkg_add/pkgin without translation).
+	// Empty list is a no-op (no install command issued).
+	Packages []string
 
 	// RunCmds are POSIX-sh strings (passed to `sh -c <cmd>`). Non-zero
 	// exit aborts further apply. Use this for the long tail : `rcctl

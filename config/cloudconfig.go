@@ -28,6 +28,7 @@ type cloudConfigYAML struct {
 	FQDN       string                 `yaml:"fqdn,omitempty"`
 	Users      []cloudUser            `yaml:"users,omitempty"`
 	WriteFiles []cloudWriteFile       `yaml:"write_files,omitempty"`
+	Packages   []any                  `yaml:"packages,omitempty"` // string or [name, ver]
 	RunCmd     []any                  `yaml:"runcmd,omitempty"`
 	BootCmd    []any                  `yaml:"bootcmd,omitempty"`
 	_          map[string]interface{} `yaml:",inline"` // tolerate unknown fields
@@ -106,8 +107,34 @@ func cloudToConfig(raw cloudConfigYAML) Config {
 		Hostname:   host,
 		Users:      users,
 		WriteFiles: files,
+		Packages:   flattenPackages(raw.Packages),
 		RunCmds:    cmds,
 	}
+}
+
+// flattenPackages accepts cloud-config's loose shape : entries can be
+// strings ("nginx") OR string-arrays for [name, version] pinning
+// (["nginx", "1.24.0"] -- we drop the version since the OS-native
+// package managers handle that via their own syntax and we don't
+// translate). Anything else is silently skipped.
+func flattenPackages(v []any) []string {
+	out := make([]string, 0, len(v))
+	for _, entry := range v {
+		switch x := entry.(type) {
+		case string:
+			if x != "" {
+				out = append(out, x)
+			}
+		case []any:
+			// First element is the name -- versions are ignored.
+			if len(x) > 0 {
+				if name, ok := x[0].(string); ok && name != "" {
+					out = append(out, name)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func normaliseGroups(v any) []string {

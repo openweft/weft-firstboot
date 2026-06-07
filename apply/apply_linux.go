@@ -247,6 +247,46 @@ func (s *linuxSystem) WriteFile(path, content, mode, owner, group string) error 
 	return nil
 }
 
+// PackageInstall dispatches to whichever package manager is present.
+// Order : apt-get (debian/ubuntu) → dnf (fedora/rocky/alma) → yum
+// (rhel7/centos7) → zypper (suse) → apk (alpine) → pacman (arch).
+// We don't refresh the repo cache (apt-get update) — that's the
+// caller's runcmd job ; running it implicitly hides upstream outages
+// behind weft-firstboot logs. Empty list → no-op.
+func (s *linuxSystem) PackageInstall(pkgs []string) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	type pm struct {
+		probe string
+		argv  []string
+	}
+	candidates := []pm{
+		{"/usr/bin/apt-get", []string{"apt-get", "install", "-y", "--no-install-recommends"}},
+		{"/usr/bin/dnf", []string{"dnf", "install", "-y"}},
+		{"/usr/bin/yum", []string{"yum", "install", "-y"}},
+		{"/usr/bin/zypper", []string{"zypper", "--non-interactive", "install"}},
+		{"/sbin/apk", []string{"apk", "add", "--no-cache"}},
+		{"/usr/bin/pacman", []string{"pacman", "-S", "--noconfirm"}},
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c.probe); err != nil {
+			continue
+		}
+		argv := append(append([]string(nil), c.argv...), pkgs...)
+		s.log.Info("package install", "manager", c.probe, "pkgs", pkgs)
+		cmd := exec.Command(argv[0], argv[1:]...)
+		// Most Linux pkg managers want non-interactive env hints.
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s install: %w (%s)", c.probe, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	return fmt.Errorf("no supported package manager found (looked for apt-get / dnf / yum / zypper / apk / pacman)")
+}
+
 // RunShell executes `sh -c cmd` with stdout+stderr blended so the
 // error we return on non-zero exit carries the full diagnostic
 // (cloud-init runcmd failures are notoriously opaque without it).

@@ -57,9 +57,8 @@ cloud-config YAML legacy path ; anything else parses as HCL.
 
 ## What it does NOT do
 
-By design, V0.1 omits :
+By design, V0.x omits (as of V0.2) :
 
-- Package install (apt, yum, pkg, pkg_add)
 - Locale / NTP / keyboard / timezone modules
 - Disk partition resize
 - Datasources beyond NoCloud (no EC2/Azure/GCP/OpenStack/vSphere)
@@ -75,6 +74,7 @@ not redesigns.
 | `hostname = "<str>"` | no | Set via OS-native mechanism (`hostnamectl`, `/etc/myname` + `hostname(1)`, `sysrc`, hand-edit of `/etc/rc.conf`) |
 | `user "<name>" {...}` | no | Create user (or reconcile groups+keys if exists) |
 | `write_file "<path>" {...}` | no | Atomic drop a file with mode + owner + group |
+| `packages = ["<pkg>", ...]` | no | Install via OS pkg mgr (apt-get / dnf / yum / zypper / apk / pacman on Linux ; `pkg_add` on OpenBSD ; `pkg install` on FreeBSD ; `pkgin install` on NetBSD) |
 | `runcmd = ["<sh>", ...]` | no | Sequential `sh -c` calls, halt on first non-zero exit |
 
 `user "<name>" {}` accepts :

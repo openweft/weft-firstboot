@@ -14,6 +14,7 @@ type hclConfig struct {
 	Hostname   string         `hcl:"hostname,optional"`
 	Users      []hclUser      `hcl:"user,block"`
 	WriteFiles []hclWriteFile `hcl:"write_file,block"`
+	Packages   []string       `hcl:"packages,optional"`
 	RunCmds    []string       `hcl:"runcmd,optional"`
 }
 
@@ -76,6 +77,7 @@ func hclToConfig(raw hclConfig) Config {
 		Hostname:   raw.Hostname,
 		Users:      users,
 		WriteFiles: files,
+		Packages:   raw.Packages,
 		RunCmds:    raw.RunCmds,
 	}
 }

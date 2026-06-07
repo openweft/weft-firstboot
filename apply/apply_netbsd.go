@@ -403,6 +403,30 @@ func atomicWrite(path string, data []byte, mode os.FileMode, uid, gid int) error
 	return nil
 }
 
+// PackageInstall calls `pkgin -y install`. pkgin is the binary package
+// manager that ships with most NetBSD distributions (third-party but
+// canonical) ; it consumes the same pkgsrc binaries the base system
+// expects. -y auto-accepts the "proceed?" prompt. Already-installed
+// packages are skipped.
+//
+// We don't fall back to manual pkg_add(1) here because NetBSD's pkg_add
+// is the LOWER-level tool and doesn't speak the pkgin repository URL
+// scheme ; if pkgin is absent the operator hasn't completed the base
+// install and we surface a clear error.
+func (s *netbsdSystem) PackageInstall(pkgs []string) error {
+	if len(pkgs) == 0 {
+		return nil
+	}
+	s.log.Info("netbsd: package install", "pkgs", pkgs)
+	argv := append([]string{"-y", "install"}, pkgs...)
+	c := exec.Command("/usr/pkg/bin/pkgin", argv...)
+	out, err := c.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("pkgin install %v: %w (%s)", pkgs, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // RunShell executes cmd via /bin/sh -c, wrapping output on failure so
 // caller sees what the script actually printed.
 func (s *netbsdSystem) RunShell(cmd string) error {

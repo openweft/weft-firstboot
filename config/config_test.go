@@ -72,6 +72,39 @@ runcmd = [
 	}
 }
 
+// TestParseHCL_Packages : packages list parses as a top-level attribute.
+func TestParseHCL_Packages(t *testing.T) {
+	src := []byte(`packages = ["nginx", "vim", "tmux"]`)
+	got, err := ParseHCL("test.hcl", src)
+	if err != nil {
+		t.Fatalf("ParseHCL: %v", err)
+	}
+	want := []string{"nginx", "vim", "tmux"}
+	if !reflect.DeepEqual(got.Packages, want) {
+		t.Errorf("Packages = %v ; want %v", got.Packages, want)
+	}
+}
+
+// TestParseCloudConfig_Packages : both string entries and [name, version]
+// pairs map to the bare package name (versions dropped — the OS pkg
+// manager handles version pinning via its own syntax).
+func TestParseCloudConfig_Packages(t *testing.T) {
+	src := []byte(`
+packages:
+  - nginx
+  - [vim, "9.0"]
+  - tmux
+`)
+	got, err := ParseCloudConfig(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"nginx", "vim", "tmux"}
+	if !reflect.DeepEqual(got.Packages, want) {
+		t.Errorf("Packages = %v ; want %v", got.Packages, want)
+	}
+}
+
 // TestParseHCL_Empty : empty HCL is valid (no-op config).
 func TestParseHCL_Empty(t *testing.T) {
 	got, err := ParseHCL("test.hcl", []byte(""))

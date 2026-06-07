@@ -50,6 +50,15 @@ type System interface {
 	// is the file overwritten (atomic rename via tempfile).
 	WriteFile(path, content, mode, owner, group string) error
 
+	// PackageInstall installs every name in pkgs via the OS-native
+	// package manager (apt-get on debian-family, dnf on fedora-family,
+	// pkg_add on OpenBSD, pkg on FreeBSD, pkgin on NetBSD). Empty list
+	// is a no-op (the impl must NOT exec the package manager just to
+	// have it churn). Idempotent : re-installing already-present
+	// packages is the OS pkg manager's job (apt-get / pkg_add / pkg /
+	// pkgin all skip already-installed packages by default).
+	PackageInstall(pkgs []string) error
+
 	// RunShell executes cmd via the OS sh, returning stdout/stderr
 	// blended on a non-zero exit. The implementation logs the command
 	// + outcome at debug level.
@@ -108,6 +117,13 @@ func Apply(cfg config.Config, sys System, log *slog.Logger) error {
 			if err := sys.AddAuthorizedKey(u.Name, key); err != nil {
 				return fmt.Errorf("user %s: ssh key: %w", u.Name, err)
 			}
+		}
+	}
+
+	if len(cfg.Packages) > 0 {
+		log.Info("install packages", "count", len(cfg.Packages), "pkgs", cfg.Packages)
+		if err := sys.PackageInstall(cfg.Packages); err != nil {
+			return fmt.Errorf("packages: %w", err)
 		}
 	}
 
