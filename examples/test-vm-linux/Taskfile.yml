@@ -1,0 +1,297 @@
+version: '3'
+
+# Reproducible QEMU/Ubuntu test VM driven by weft-firstboot.
+#
+# Architecture mirrors the OpenBSD pendant (weft-driver-vmd's
+# Taskfile.test-vm.yml) : a small bootstrap layer ships
+# weft-firstboot into the VM and runs it once, weft-firstboot
+# applies the real HCL config. Everything substantive
+# (hostname, users, SSH keys, packages, runcmds) lives in the
+# SAME HCL format the OpenBSD VM consumes — proving the
+# cross-OS premise of weft-firstboot.
+#
+# On OpenBSD the bootstrap layer is install.conf's
+# autoinstall.tail + /etc/rc.local. On Linux it's a NoCloud
+# cidata.iso the Ubuntu cloud image's pre-installed cloud-init
+# auto-discovers ; the cidata user-data is a five-line
+# cloud-config that does ONLY "curl + chmod + exec
+# weft-firstboot apply". Everything past that is HCL.
+#
+# Runs on the macOS HOST. Apple Silicon → Ubuntu/arm64,
+# Intel Mac → Ubuntu/amd64.
+#
+# Prerequisites (one-time) :
+#   brew install socket_vmnet
+#   sudo brew services start socket_vmnet
+#   # pkgx provides qemu + xorriso ; python3 ships with macOS
+#
+# Lifecycle :
+#   task firstboot   # one-shot SLIRP boot with cidata.iso ; weft-firstboot fires
+#   task up          # boot via vmnet for SSH access
+#   task ssh         # SSH in via vmnet DHCP lease
+#   task down        # ACPI shutdown via QMP
+#   task clean       # nuke disk + ISOs + downloaded image
+
+vars:
+  UBUNTU_RELEASE: '24.04'
+  UBUNTU_CODENAME: noble
+  STATE_DIR: '{{.HOME}}/.weft-firstboot/test-vm-linux'
+  HTTP_DIR: '{{.STATE_DIR}}/http'
+  DISK_SIZE: 20G
+  MEM_MIB: 2048
+  CPUS: 2
+  GUEST_HOSTNAME: linux-test
+  GUEST_USER: ubuntu
+  GUEST_MAC: '52:54:00:c0:ff:f0'
+  VMNET_SOCK: /var/run/socket_vmnet
+  HTTP_PORT: 8080
+  FIRSTBOOT_VERSION: v0.2.0
+
+  HOST_ARCH:
+    sh: |
+      case "$(uname -m)" in
+        arm64)  echo arm64  ;;
+        x86_64) echo amd64  ;;
+        *) echo "unsupported host arch : $(uname -m)" >&2; exit 1 ;;
+      esac
+  QEMU_BIN:
+    sh: |
+      case "$(uname -m)" in
+        arm64) echo qemu-system-aarch64 ;;
+        x86_64) echo qemu-system-x86_64 ;;
+      esac
+  EDK2_FW:
+    sh: |
+      for p in /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+               /usr/local/share/qemu/edk2-aarch64-code.fd; do
+        [ -f "$p" ] && { echo "$p"; exit; }
+      done
+      echo ''
+  SOCKET_VMNET_CLIENT:
+    sh: |
+      for p in /opt/socket_vmnet/bin/socket_vmnet_client \
+               /usr/local/opt/socket_vmnet/bin/socket_vmnet_client; do
+        [ -x "$p" ] && { echo "$p"; exit; }
+      done
+      echo 'socket_vmnet_client not found ; brew install socket_vmnet' >&2
+      exit 1
+  SSH_PUBKEY:
+    sh: |
+      for f in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub; do
+        [ -f "$f" ] && { cat "$f"; exit; }
+      done
+      echo 'no SSH public key found in ~/.ssh/' >&2; exit 1
+
+  # Ubuntu publishes daily cloud images as -img / -img-arm64 ; we pull
+  # the LTS release rather than daily for reproducibility.
+  CLOUD_IMG_URL:
+    sh: |
+      case "$(uname -m)" in
+        arm64)  echo "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img" ;;
+        x86_64) echo "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img" ;;
+      esac
+  CLOUD_IMG_PATH: '{{.STATE_DIR}}/ubuntu-cloud-{{.HOST_ARCH}}.img'
+  DISK_PATH:      '{{.STATE_DIR}}/disk.qcow2'
+  CIDATA_PATH:    '{{.STATE_DIR}}/cidata.iso'
+  EFI_VARS:       '{{.STATE_DIR}}/edk2-vars.fd'
+  QMP_SOCK:       '{{.STATE_DIR}}/qmp.sock'
+  HTTP_PID_F:     '{{.STATE_DIR}}/http.pid'
+  FIRSTBOOT_URL: 'https://github.com/openweft/weft-firstboot/releases/download/{{.FIRSTBOOT_VERSION}}/weft-firstboot-linux-{{.HOST_ARCH}}'
+
+tasks:
+  default:
+    cmds: [task --list-all]
+
+  tools-check:
+    cmds:
+      - command -v pkgx >/dev/null || { echo 'install pkgx : curl -fsS https://pkgx.sh | sh' >&2; exit 1; }
+      - command -v python3 >/dev/null || { echo 'python3 missing' >&2; exit 1; }
+      - test -S {{.VMNET_SOCK}} || { echo 'socket_vmnet not running — sudo brew services start socket_vmnet' >&2; exit 1; }
+      - echo 'tooling OK'
+
+  state-dir:
+    cmds: [mkdir -p {{.STATE_DIR}} {{.HTTP_DIR}}]
+    status: [test -d {{.HTTP_DIR}}]
+
+  image-fetch:
+    desc: Download Ubuntu LTS cloud image (~600 MiB qcow2, one-shot)
+    deps: [state-dir]
+    cmds:
+      - curl -fL --progress-bar -o {{.CLOUD_IMG_PATH}} '{{.CLOUD_IMG_URL}}'
+    status: [test -s {{.CLOUD_IMG_PATH}}]
+
+  disk-create:
+    desc: Clone the cloud image into a sized qcow2 working disk
+    deps: [image-fetch]
+    cmds:
+      - pkgx +qemu.org qemu-img convert -O qcow2 {{.CLOUD_IMG_PATH}} {{.DISK_PATH}}
+      - pkgx +qemu.org qemu-img resize {{.DISK_PATH}} {{.DISK_SIZE}}
+      - |
+        if [ '{{.HOST_ARCH}}' = arm64 ] && [ ! -s {{.EFI_VARS}} ]; then
+          dd if=/dev/zero of={{.EFI_VARS}} bs=1m count=64 2>/dev/null
+        fi
+    status: [test -s {{.DISK_PATH}}]
+
+  firstboot-fetch:
+    desc: Download the weft-firstboot Linux binary into HTTP_DIR
+    deps: [state-dir]
+    cmds:
+      - curl -fL --progress-bar -o {{.HTTP_DIR}}/weft-firstboot '{{.FIRSTBOOT_URL}}'
+      - chmod 0755 {{.HTTP_DIR}}/weft-firstboot
+    status: [test -s {{.HTTP_DIR}}/weft-firstboot]
+
+  user-data-hcl:
+    desc: Render the weft-firstboot HCL config served over HTTP
+    deps: [state-dir]
+    cmds:
+      - |
+        # Note : this is the SAME HCL schema the OpenBSD test VM uses.
+        # Cross-OS portability of the format is the whole point.
+        cat > {{.HTTP_DIR}}/user-data <<EOF
+        hostname = "{{.GUEST_HOSTNAME}}"
+
+        user "{{.GUEST_USER}}" {
+          ssh_authorized_keys = ["{{.SSH_PUBKEY}}"]
+          groups              = ["sudo"]
+          sudo                = true
+          shell               = "/bin/bash"
+        }
+
+        write_file "/etc/sudoers.d/90-ubuntu-nopasswd" {
+          content = "ubuntu ALL=(ALL) NOPASSWD:ALL\n"
+          mode    = "0440"
+          owner   = "root"
+          group   = "root"
+        }
+
+        packages = [
+          "git",
+          "tmux",
+          "vim",
+          "build-essential",
+        ]
+
+        runcmd = [
+          "systemctl enable --now ssh",
+          "systemctl set-default multi-user.target",
+        ]
+        EOF
+
+  cidata-iso:
+    desc: Build the NoCloud cidata.iso (5-line cloud-config bootstrap)
+    deps: [state-dir, firstboot-fetch, user-data-hcl]
+    cmds:
+      - |
+        set -eu
+        work={{.STATE_DIR}}/cidata-work
+        rm -rf "$work" && mkdir -p "$work"
+        # meta-data : minimal NoCloud header. instance-id changes per
+        # run so cloud-init treats the boot as a fresh instance and
+        # re-runs runcmd (otherwise our weft-firstboot fetch would
+        # skip on iso re-build).
+        cat > "$work/meta-data" <<EOF
+        instance-id: weft-firstboot-test-$(date -u +%s)
+        local-hostname: {{.GUEST_HOSTNAME}}
+        EOF
+        # user-data : minimal cloud-config that does ONLY "fetch +
+        # exec weft-firstboot". Everything else is in the HCL config
+        # weft-firstboot fetches from the same HTTP server. cloud-init
+        # is here purely as a bootstrap loader.
+        cat > "$work/user-data" <<EOF
+        #cloud-config
+        runcmd:
+          - [curl, -fsSL, -o, /usr/local/bin/weft-firstboot, http://10.0.2.2:{{.HTTP_PORT}}/weft-firstboot]
+          - [chmod, "0755", /usr/local/bin/weft-firstboot]
+          - [/usr/local/bin/weft-firstboot, apply, --datasource, "http://10.0.2.2:{{.HTTP_PORT}}/"]
+        EOF
+        pkgx +xorriso.libburnia-project.org xorriso \
+          -as mkisofs -output {{.CIDATA_PATH}} \
+          -volid cidata -joliet -rock \
+          "$work/meta-data" "$work/user-data"
+        rm -rf "$work"
+    status: [test -s {{.CIDATA_PATH}}]
+
+  firstboot:
+    desc: One-shot SLIRP boot ; cloud-init fires weft-firstboot via cidata.iso
+    deps: [tools-check, disk-create, cidata-iso]
+    cmds:
+      - |
+        set -eu
+        sudo -b sh -c "python3 -m http.server {{.HTTP_PORT}} \
+          --bind 127.0.0.1 --directory {{.HTTP_DIR}} >/dev/null 2>&1 & \
+          echo \$! > {{.HTTP_PID_F}}"
+        trap "sudo kill \$(cat {{.HTTP_PID_F}} 2>/dev/null) 2>/dev/null || true; rm -f {{.HTTP_PID_F}}" EXIT
+        sleep 1
+        common="-smp {{.CPUS}} -m {{.MEM_MIB}} \
+          -drive file={{.DISK_PATH}},if=virtio,format=qcow2 \
+          -drive file={{.CIDATA_PATH}},if=virtio,format=raw,media=cdrom,readonly=on \
+          -boot c \
+          -netdev user,id=net0,hostname={{.GUEST_HOSTNAME}} \
+          -device virtio-net-pci,netdev=net0 \
+          -nographic -serial mon:stdio"
+        if [ '{{.HOST_ARCH}}' = arm64 ]; then
+          [ -n '{{.EDK2_FW}}' ] || { echo 'edk2-aarch64-code.fd missing' >&2; exit 1; }
+          args="-machine virt,accel=hvf,highmem=on -cpu host \
+            -drive if=pflash,format=raw,readonly=on,file={{.EDK2_FW}} \
+            -drive if=pflash,format=raw,file={{.EFI_VARS}} $common"
+        else
+          args="-machine q35,accel=hvf -cpu host $common"
+        fi
+        pkgx +qemu.org {{.QEMU_BIN}} $args
+        echo 'firstboot complete ; run `task up` for subsequent boots (SSH-able via vmnet)'
+
+  up:
+    desc: Boot the installed VM via socket_vmnet (no cidata ; SSH-able)
+    deps: [tools-check, disk-create]
+    cmds:
+      - |
+        set -eu
+        test -s {{.DISK_PATH}} || { echo 'no disk ; run `task firstboot` first' >&2; exit 1; }
+        rm -f {{.QMP_SOCK}}
+        common="-smp {{.CPUS}} -m {{.MEM_MIB}} \
+          -drive file={{.DISK_PATH}},if=virtio,format=qcow2 \
+          -boot c \
+          -netdev socket,id=net0,fd=3 \
+          -device virtio-net-pci,netdev=net0,mac={{.GUEST_MAC}} \
+          -qmp unix:{{.QMP_SOCK}},server=on,wait=off \
+          -nographic -serial mon:stdio"
+        if [ '{{.HOST_ARCH}}' = arm64 ]; then
+          args="-machine virt,accel=hvf,highmem=on -cpu host \
+            -drive if=pflash,format=raw,readonly=on,file={{.EDK2_FW}} \
+            -drive if=pflash,format=raw,file={{.EFI_VARS}} $common"
+        else
+          args="-machine q35,accel=hvf -cpu host $common"
+        fi
+        sudo {{.SOCKET_VMNET_CLIENT}} {{.VMNET_SOCK}} \
+          pkgx +qemu.org {{.QEMU_BIN}} $args
+
+  ssh:
+    desc: SSH into the running VM via its vmnet DHCP lease
+    cmds:
+      - |
+        set -eu
+        ip=$(awk -v mac='{{.GUEST_MAC}}' '
+          /ip_address=/ { ip=$0; sub(/.*=/,"",ip); sub(/[;]/,"",ip) }
+          /hw_address=1,/ {
+            hw=$0; sub(/.*hw_address=1,/,"",hw); sub(/[;]/,"",hw)
+            if (tolower(hw) == tolower(mac)) print ip
+          }' /var/db/dhcpd_leases | tail -1)
+        [ -n "$ip" ] || { echo 'no DHCP lease yet for {{.GUEST_MAC}}' >&2; exit 1; }
+        echo "VM ip : $ip"
+        exec ssh -o StrictHostKeyChecking=accept-new {{.GUEST_USER}}@$ip
+
+  down:
+    desc: Graceful ACPI shutdown via QMP
+    cmds:
+      - |
+        set -eu
+        test -S {{.QMP_SOCK}} || { echo 'VM not running (no QMP socket)' >&2; exit 1; }
+        printf '{"execute":"qmp_capabilities"}\n{"execute":"system_powerdown"}\n' \
+          | nc -U {{.QMP_SOCK}}
+        echo 'ACPI shutdown sent'
+
+  clean:
+    desc: Nuke disk + ISOs + downloaded cloud image
+    cmds:
+      - rm -f {{.DISK_PATH}} {{.CLOUD_IMG_PATH}} {{.CIDATA_PATH}} {{.EFI_VARS}} {{.QMP_SOCK}}
+      - rm -rf {{.HTTP_DIR}}
