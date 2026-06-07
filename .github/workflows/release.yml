@@ -1,0 +1,59 @@
+name: Release
+
+# Tag-gated : v* tag pushes build the 8-target matrix and attach the
+# binaries to a GitHub Release. Branch-push does NOT trigger this — see
+# the openweft no-autopublish-during-dev policy.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, openbsd, freebsd, netbsd]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          out="weft-firstboot-${{ matrix.goos }}-${{ matrix.goarch }}"
+          go build -trimpath -ldflags "\
+            -X github.com/openweft/weft-firstboot/cmd/weft-firstboot.version=$version \
+            -X github.com/openweft/weft-firstboot/cmd/weft-firstboot.commit=${GITHUB_SHA::7} \
+            -X github.com/openweft/weft-firstboot/cmd/weft-firstboot.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "$out" ./cmd/weft-firstboot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weft-firstboot-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: weft-firstboot-${{ matrix.goos }}-${{ matrix.goarch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: weft-firstboot-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/weft-firstboot-*
+          generate_release_notes: true

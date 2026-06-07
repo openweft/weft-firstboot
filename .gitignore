@@ -1,0 +1,5 @@
+/dist/
+/weft-firstboot
+/cmd/weft-firstboot/weft-firstboot
+*.test
+.DS_Store

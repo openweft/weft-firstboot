@@ -1,0 +1,66 @@
+version: '3'
+
+# weft-firstboot : pure-Go cloud-init-lite for openweft VMs.
+# Build matrix : {linux,openbsd,freebsd,netbsd} x {amd64,arm64}.
+
+vars:
+  BINARY: weft-firstboot
+  PKG: github.com/openweft/weft-firstboot
+  VERSION: '{{.VERSION | default "dev"}}'
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo none
+  DATE:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+  LDFLAGS: >-
+    -X {{.PKG}}/cmd/{{.BINARY}}.version={{.VERSION}}
+    -X {{.PKG}}/cmd/{{.BINARY}}.commit={{.COMMIT}}
+    -X {{.PKG}}/cmd/{{.BINARY}}.date={{.DATE}}
+
+tasks:
+  default:
+    cmds: [task --list-all]
+
+  vet:
+    desc: Run go vet on the host GOOS
+    cmds: [go vet ./...]
+
+  test:
+    desc: Run go test (host GOOS) ; per-OS implementations are vet'd via cross-vet
+    cmds: [go test -count=1 ./...]
+
+  cross-vet:
+    desc: go vet for every supported (GOOS,GOARCH) combo
+    cmds:
+      - |
+        for goos in linux openbsd freebsd netbsd; do
+          for goarch in amd64 arm64; do
+            echo "vet $goos/$goarch"
+            GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 go vet ./... || exit 1
+          done
+        done
+
+  cross-build:
+    desc: Cross-build the binary for every supported (GOOS,GOARCH) combo
+    cmds:
+      - mkdir -p dist
+      - |
+        for goos in linux openbsd freebsd netbsd; do
+          for goarch in amd64 arm64; do
+            out=dist/{{.BINARY}}-$goos-$goarch
+            echo "build $out"
+            GOOS=$goos GOARCH=$goarch CGO_ENABLED=0 \
+              go build -trimpath -ldflags "{{.LDFLAGS}}" \
+              -o "$out" ./cmd/{{.BINARY}}
+          done
+        done
+
+  ci:
+    desc: Full CI sequence — what release / PR gates run
+    cmds:
+      - task: vet
+      - task: test
+      - task: cross-vet
+      - task: cross-build
+
+  clean:
+    cmds: [rm -rf dist]
