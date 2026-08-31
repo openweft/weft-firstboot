@@ -1,10 +1,18 @@
 // Package datasource locates the first-boot configuration. V0.1 supports
 // two flavours of the NoCloud datasource :
 //
-//   nocloud-net : HTTP fetch of user-data + meta-data (cloud-init's
-//                 standard "fetch from a web server pointed at by DHCP")
-//   nocloud     : block device with a filesystem label "cidata" or
-//                 "CIDATA" holding /user-data + /meta-data
+//	nocloud-net : HTTP fetch of user-data + meta-data (cloud-init's
+//	              standard "fetch from a web server pointed at by DHCP")
+//	nocloud     : block device with a filesystem label "cidata" or
+//	              "CIDATA" holding /user-data + /meta-data
+//
+// The nocloud disk is read *without mounting it* : the candidate device
+// nodes are opened read-only and their on-disk structures decoded in
+// pure Go (go-filesystems/detect picks the driver from the magic
+// signature). No mount(2), no /sbin/mount_* fork, no root. A mount
+// fallback survives for filesystem shapes the pure-Go drivers cannot
+// read yet — see fromDisk in disk.go — and Source.Origin always says
+// which of the two served.
 //
 // The configuration format inside the datasource is auto-detected : if
 // user-data starts with "#cloud-config" or is parseable as YAML, we treat
@@ -13,9 +21,10 @@
 //
 // Discovery order, from cheapest to most invasive :
 //
-//   1. --datasource URL              explicit override (highest priority)
-//   2. NoCloud disk (cidata label)   no network needed, mount cost only
-//   3. NoCloud-NET via HTTP          one DHCP probe + one GET
+//  1. --datasource URL              explicit override (highest priority)
+//  2. NoCloud disk (cidata label)   no network, no privilege : a
+//     read-only open plus a few bounded reads per candidate device
+//  3. NoCloud-NET via HTTP          one DHCP probe + one GET
 package datasource
 
 import (

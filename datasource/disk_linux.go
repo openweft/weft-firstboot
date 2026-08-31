@@ -11,7 +11,32 @@ import (
 )
 
 func init() {
+	candidateDevices = linuxCandidateDevices
 	mountCidata = linuxMountCidata
+}
+
+// linuxCandidateDevices lists the nodes to try, most likely first.
+//
+// udev's by-label symlinks are the precise answer and come first : they
+// name the filesystem label the NoCloud contract specifies, whatever the
+// filesystem type or the disk's position on the bus.
+//
+// The bare nodes after them exist because by-label is not universal —
+// a guest booted without udev (a minimal initramfs, a container-ish
+// rootfs, an early rc stage) has an empty /dev/disk/. Under the old
+// mount-based code such a guest found nothing at all. Trying the usual
+// virtio / SCSI / ATAPI seats costs a read-only open and a handful of
+// bounded reads each, and the candidate is only accepted once
+// /user-data has actually been read out of it, so a wrong guess is
+// discarded rather than acted on.
+func linuxCandidateDevices() []string {
+	return []string{
+		"/dev/disk/by-label/cidata",
+		"/dev/disk/by-label/CIDATA",
+		"/dev/sr0", "/dev/sr1",
+		"/dev/vdb", "/dev/vdc",
+		"/dev/sdb", "/dev/sdc",
+	}
 }
 
 // linuxMountCidata walks /dev/disk/by-label/ for cidata / CIDATA and mounts
@@ -19,10 +44,9 @@ func init() {
 // labeled filesystem on the system, regardless of FS type — covers
 // iso9660 (most common for cidata), vfat (sometimes), and ext4 (rare).
 //
-// The filesystem type is auto-detected via the kernel's filesystems list :
-// we try iso9660 first (cloud-init's default for cidata) then vfat. If
-// /proc/filesystems isn't readable (extremely unusual) we just pass an
-// empty type and let the kernel guess.
+// This is the fallback path : it runs only when the unprivileged direct
+// read in disk.go found nothing. It needs CAP_SYS_ADMIN, which is why it
+// is no longer the first thing tried.
 func linuxMountCidata() (string, func(), error) {
 	candidates := []string{
 		"/dev/disk/by-label/cidata",
@@ -54,4 +78,3 @@ func linuxMountCidata() (string, func(), error) {
 	cleanup()
 	return "", nil, fmt.Errorf("could not mount %s as iso9660 or vfat", dev)
 }
-
