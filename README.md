@@ -57,6 +57,42 @@ it probes :
 Format autodetect : a `#cloud-config` magic header dispatches the
 cloud-config YAML legacy path ; anything else parses as HCL.
 
+### The cidata disk is read, not mounted
+
+The seed disk is decoded in pure Go. Each candidate device node is
+opened **read-only**, its filesystem identified from its on-disk magic
+signature by
+[`go-filesystems/detect`](https://github.com/go-filesystems/detect), and
+`/user-data` read straight out of the structures by
+[`iso9660`](https://github.com/go-filesystems/iso9660) or
+[`fat32`](https://github.com/go-filesystems/fat32). No `mount(2)`, no
+`/sbin/mount_cd9660` fork, no root, and one implementation shared by
+Linux and every BSD — only the list of device nodes to try stays
+per-OS, because udev's `/dev/disk/by-label/` and the BSDs' bare disk
+nodes are genuinely different things.
+
+A **mount fallback** survives, and runs only when the direct read found
+nothing on every candidate. It exists for seed shapes the pure-Go
+drivers do not read yet:
+
+| shape | direct read | mount fallback |
+|---|---|---|
+| iso9660 (Rock Ridge, Joliet, or plain ECMA-119) | yes | not reached |
+| vfat / FAT32 (image ≥ ~33 MiB) | yes | not reached |
+| vfat / **FAT12 or FAT16** (what `mkfs.vfat` picks below ~33 MiB) | **no** | yes |
+| anything else udev labels `cidata` (ext4 seeds are rare but legal) | no | yes |
+
+Which of the two served is recorded in the origin string, so `apply`'s
+log line and the sentinel file say it plainly:
+
+```
+nocloud:/dev/sr0 (iso9660, direct)
+nocloud:/tmp/weft-firstboot-cidata-123 (mount fallback)
+```
+
+If you see `mount fallback` on a guest, the seed is one of the shapes
+above and the boot needed root to read it.
+
 ## What it does NOT do
 
 By design, V0.x omits (as of V0.2) :

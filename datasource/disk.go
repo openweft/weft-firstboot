@@ -173,30 +173,55 @@ func readCidataFile(dev, name string) ([]byte, detect.Type, error) {
 	return data, typ, nil
 }
 
+// sizeProbe is the slice of *os.File deviceSize needs. It exists so a
+// test can present the one shape a test host cannot create: a
+// non-regular file whose length only a seek will reveal, which is
+// exactly what a Linux block device is.
+type sizeProbe interface {
+	Stat() (os.FileInfo, error)
+	Seek(offset int64, whence int) (int64, error)
+}
+
 // deviceSize reports the byte length of f, or -1 when it cannot be
 // determined. A regular file answers through Stat ; a Linux block
 // device reports 0 there, so we seek to the end, which the block layer
-// answers without an ioctl (and so without per-OS code). Drivers accept
-// -1 and fall back to their own bounded-allocation ceiling, so an
-// unknown size costs capability, never safety.
-func deviceSize(f *os.File) int64 {
+// answers without an ioctl (and so without per-OS code). The offset is
+// restored afterwards, because the caller goes on to read through the
+// same descriptor.
+//
+// Drivers accept -1 and fall back to their own bounded-allocation
+// ceiling, so an unknown size costs capability (FAT32 staging needs a
+// real length), never safety.
+func deviceSize(f sizeProbe) int64 {
 	if fi, err := f.Stat(); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
 		return fi.Size()
 	}
-	if n, err := f.Seek(0, io.SeekEnd); err == nil && n > 0 {
-		if _, err := f.Seek(0, io.SeekStart); err == nil {
-			return n
-		}
+	n, err := f.Seek(0, io.SeekEnd)
+	if err != nil || n <= 0 {
+		return -1
 	}
-	return -1
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return -1
+	}
+	return n
 }
 
 // readNamed reads name from fs, tolerating the name manglings the two
-// on-disk formats apply. An ISO 9660 image built without Rock Ridge
-// stores "user-data" as "USER-DAT.;1" ; FAT stores a short 8.3 alias
-// beside the long name. So : exact path first, then a case-insensitive
-// scan of the root directory that ignores an ISO version suffix and
-// accepts the truncated 8.3 form.
+// on-disk formats apply.
+//
+// A cidata ISO minted the usual way (cloud-localds, i.e. genisoimage
+// -joliet -rock) stores "user-data" verbatim in its Rock Ridge tree, so
+// the exact path is tried first and is what real seeds hit. An ISO
+// minted without those options is restricted to ECMA-119 level 1 —
+// eight upper-case characters from [A-Z0-9_], a dot, and a ";1" version
+// suffix — so the same file is on disk as "USER_DAT". FAT stores an 8.3
+// alias ("USER-D~1") beside the long name.
+//
+// So : exact path, then an exact-ish scan of the root directory
+// (case-folded, version suffix ignored), then a last pass that undoes
+// the level-1 mangling. The passes are ordered so a directory that does
+// contain a plainly-named user-data can never be answered from a
+// fuzzily-matched neighbour.
 func readNamed(fs filesystem.Filesystem, name string) ([]byte, error) {
 	if data, err := fs.ReadFile("/" + name); err == nil {
 		return data, nil
@@ -205,33 +230,57 @@ func readNamed(fs filesystem.Filesystem, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list root: %w", err)
 	}
-	for _, e := range entries {
-		if matchesName(e.Name(), name) {
-			return fs.ReadFile("/" + e.Name())
+	for _, match := range []func(got, want string) bool{exactName, mangledName} {
+		for _, e := range entries {
+			if match(e.Name(), name) {
+				return fs.ReadFile("/" + e.Name())
+			}
 		}
 	}
 	return nil, fmt.Errorf("%s not present", name)
 }
 
-// matchesName reports whether an on-disk entry names the wanted file.
-// Comparison is case-insensitive (ISO 9660 level 1 and FAT 8.3 both
-// upper-case), ignores an ISO version suffix (";1"), and accepts the
-// dot-for-dash substitution ISO 9660 makes when it has to squeeze a
-// name into 8.3 ("USER-DAT.").
-func matchesName(got, want string) bool {
-	got = strings.TrimSuffix(got, ";1")
-	if strings.EqualFold(got, want) {
+// exactName reports a case-insensitive match once an ISO 9660 version
+// suffix (";1") and its trailing dot are discounted.
+func exactName(got, want string) bool {
+	return strings.EqualFold(trimISOSuffix(got), want)
+}
+
+// mangledName reports whether got is what ECMA-119 level 1 makes of
+// want : every character outside [A-Z0-9_] replaced by "_", then
+// truncated to eight. Both sides are normalised the same way, and a
+// truncated match must still be at least minManglePrefix characters so
+// an unrelated short name can never pass for the seed.
+func mangledName(got, want string) bool {
+	g, w := mangle(trimISOSuffix(got)), mangle(want)
+	if g == w {
 		return true
 	}
-	got = strings.TrimSuffix(got, ".")
-	if strings.EqualFold(got, want) {
-		return true
+	const minManglePrefix = 8
+	return len(g) >= minManglePrefix && len(g) < len(w) && g == w[:len(g)]
+}
+
+// trimISOSuffix drops an ECMA-119 ";<version>" suffix and the trailing
+// dot a level-1 name keeps when it has no extension.
+func trimISOSuffix(s string) string {
+	if i := strings.LastIndexByte(s, ';'); i >= 0 {
+		s = s[:i]
 	}
-	// 8.3 truncation : "user-data" -> "USER-DAT". Require a non-trivial
-	// prefix so we never mistake an unrelated short name for the seed.
-	const minPrefix = 8
-	if len(got) >= minPrefix && len(got) < len(want) && strings.EqualFold(got, want[:len(got)]) {
-		return true
-	}
-	return false
+	return strings.TrimSuffix(s, ".")
+}
+
+// mangle upper-cases s and replaces every character ECMA-119 level 1
+// forbids in a file identifier with an underscore — the same
+// substitution the mastering tool made on the way in.
+func mangle(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r - ('a' - 'A')
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return r
+		default:
+			return '_'
+		}
+	}, s)
 }
