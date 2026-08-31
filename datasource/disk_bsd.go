@@ -12,18 +12,18 @@ import (
 )
 
 func init() {
+	candidateDevices = bsdCandidateDevices
 	mountCidata = bsdMountCidata
 }
 
 // bsdMountCidata enumerates common cidata device paths and tries
-// mounting each as cd9660 (iso9660) read-only until one yields a
-// /user-data file.
+// mounting each as cd9660 (iso9660) then msdos, read-only, until one
+// yields a /user-data file.
 //
-// The BSDs don't have udev-style /dev/disk/by-label/, so we can't
-// dispatch on label cheaply. We walk a per-OS candidate list of
-// likely virtio-cd / disk nodes. The qemu virtio-blk device for a
-// second cidata image typically lands at sd1 (OpenBSD) or vtbd1
-// (FreeBSD) or wd1 (NetBSD raw IDE).
+// This is the fallback path : it runs only when the unprivileged direct
+// read in disk.go found nothing on any candidate. It forks
+// /sbin/mount_* and needs root, which is why it is no longer the first
+// thing tried.
 func bsdMountCidata() (string, func(), error) {
 	candidates := candidateDevices()
 	mnt, err := os.MkdirTemp("", "weft-firstboot-cidata-")
@@ -57,11 +57,15 @@ func bsdMountCidata() (string, func(), error) {
 	return "", nil, errors.New("no cidata-shaped disk found among candidate devices")
 }
 
-// candidateDevices returns the paths to scan. Per-OS because the device
-// naming conventions diverge. We include both raw (c-partition / whole
-// disk) and partitioned forms because cidata images come in both shapes
-// depending on the tool used to mint them.
-func candidateDevices() []string {
+// bsdCandidateDevices returns the paths to scan. Per-OS because the
+// device naming conventions diverge and there is no udev-style
+// /dev/disk/by-label/ to dispatch on. We include both raw (c-partition
+// / whole disk) and partitioned forms because cidata images come in
+// both shapes depending on the tool used to mint them.
+//
+// The list is unchanged from the mount-era code : what changed is what
+// we do with each entry (open and read, rather than mount).
+func bsdCandidateDevices() []string {
 	switch runtime.GOOS {
 	case "openbsd":
 		return []string{
