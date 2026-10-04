@@ -12,13 +12,13 @@ package config
 
 // Config is the parsed, normalised first-boot directive set. Apply order :
 //
-//   1. SetHostname
-//   2. WriteFiles  (in declaration order)
-//   3. CreateUsers (in declaration order ; each user's authorized_keys
-//      land after the user's home is created)
-//   4. Packages    (one PackageInstall call with the whole list ; the
-//      per-OS pkg manager handles batching itself for efficiency)
-//   5. RunCmds     (in declaration order, fail-fast on non-zero exit)
+//  1. SetHostname
+//  2. WriteFiles  (in declaration order)
+//  3. CreateUsers (in declaration order ; each user's authorized_keys
+//     land after the user's home is created)
+//  4. Packages    (one PackageInstall call with the whole list ; the
+//     per-OS pkg manager handles batching itself for efficiency)
+//  5. RunCmds     (in declaration order, fail-fast on non-zero exit)
 //
 // Packages-before-RunCmds is intentional : a typical config installs
 // nginx then runs `systemctl enable nginx` ; the runcmd needs the

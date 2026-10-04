@@ -50,7 +50,7 @@ func newMemSystem() *memSystem {
 	}
 }
 
-func (m *memSystem) Hostname() (string, error)    { return m.hostname, nil }
+func (m *memSystem) Hostname() (string, error) { return m.hostname, nil }
 func (m *memSystem) SetHostname(name string) error {
 	m.hostname = name
 	m.hostnameSetCnt++
