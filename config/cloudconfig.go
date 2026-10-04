@@ -9,16 +9,16 @@ import (
 
 // cloudConfigYAML is a deliberate SUBSET of cloud-config :
 //
-//   hostname / fqdn       -> Hostname
-//   users[].name          -> User.Name
-//   users[].ssh_authorized_keys -> User.SSHAuthorizedKeys
-//   users[].groups        -> User.Groups
-//   users[].sudo          -> User.Sudo (any non-empty string means yes)
-//   users[].shell         -> User.Shell
-//   users[].passwd        -> User.PasswordHash
-//   write_files[]         -> WriteFiles (path/content/permissions/owner)
-//   runcmd[]              -> RunCmds (list of strings ; list-of-lists
-//                                     is flattened to "arg arg arg")
+//	hostname / fqdn       -> Hostname
+//	users[].name          -> User.Name
+//	users[].ssh_authorized_keys -> User.SSHAuthorizedKeys
+//	users[].groups        -> User.Groups
+//	users[].sudo          -> User.Sudo (any non-empty string means yes)
+//	users[].shell         -> User.Shell
+//	users[].passwd        -> User.PasswordHash
+//	write_files[]         -> WriteFiles (path/content/permissions/owner)
+//	runcmd[]              -> RunCmds (list of strings ; list-of-lists
+//	                                  is flattened to "arg arg arg")
 //
 // EVERYTHING ELSE in cloud-config is silently ignored. The legacy parser
 // exists to onboard existing Ubuntu/Debian user-data with minimal friction,
@@ -206,7 +206,7 @@ func flattenRunCmd(v []any) []string {
 	return out
 }
 
-// shellQuote single-quotes a string for sh ; ' inside becomes '\''.
+// shellQuote single-quotes a string for sh ; ' inside becomes '\”.
 func shellQuote(s string) string {
 	if s == "" {
 		return "''"
